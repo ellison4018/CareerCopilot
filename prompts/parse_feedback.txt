@@ -1,0 +1,22 @@
+Extract structured search constraints from the user's job search feedback below.
+
+Return ONLY a valid JSON object with this exact schema:
+{
+  "location": "string or null",
+  "exclude_company_type": "string or null",
+  "salary_min": "number or null",
+  "target_role": "string or null",
+  "query_append": "string or null"
+}
+
+Field rules:
+- location: city name if user specified a city preference (e.g. "深圳", "北京"), else null
+- exclude_company_type: company type to exclude if mentioned (e.g. "外企", "国企", "创业公司"), else null
+- salary_min: minimum monthly salary in yuan if mentioned (e.g. "20K" → 20000), else null
+- target_role: refined job title if user changed direction (e.g. "只看产品岗"), else null
+- query_append: 2-5 keywords summarizing the user's preference for appending to the search query, else null
+
+Output raw JSON only, no markdown fences, no explanation.
+
+User Feedback:
+{feedback}
