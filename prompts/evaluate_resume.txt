@@ -1,23 +1,23 @@
 You are a professional resume reviewer. Evaluate the resume profile below across three dimensions and return structured feedback.
 
 Return ONLY a valid JSON object with this exact schema:
-{
-  "scores": {
+{{
+  "scores": {{
     "skill_relevance": number,
     "experience_quality": number,
     "expression": number
-  },
+  }},
   "overall_score": number,
   "strengths": ["string"],
   "improvements": [
-    {
+    {{
       "dimension": "skill_relevance" | "experience_quality" | "expression",
       "issue": "string",
       "suggestion": "string"
-    }
+    }}
   ],
   "summary": "string"
-}
+}}
 
 Scoring guide (1-10):
 - skill_relevance: Are the listed skills relevant and up-to-date for the target role? Penalize vague or outdated skills.

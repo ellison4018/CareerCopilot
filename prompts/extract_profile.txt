@@ -1,36 +1,36 @@
 You are a resume parser. Extract structured information from the resume text below.
 
 Return ONLY a valid JSON object with this exact schema:
-{
+{{
   "name": "string or null",
   "target_role": "string or null",
   "years_of_experience": number or null,
   "location": "string or null",
   "skills": ["string"],
   "experience": [
-    {
+    {{
       "company": "string",
       "title": "string",
       "duration": "string",
       "responsibilities": ["string"]
-    }
+    }}
   ],
   "education": [
-    {
+    {{
       "school": "string",
       "degree": "string",
       "major": "string",
       "graduation_year": "string or null"
-    }
+    }}
   ],
   "projects": [
-    {
+    {{
       "name": "string",
       "description": "string",
       "tech_stack": ["string"]
-    }
+    }}
   ]
-}
+}}
 
 Rules:
 - Output raw JSON only, no markdown fences, no explanation.

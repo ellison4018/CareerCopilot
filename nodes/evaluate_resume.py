@@ -18,6 +18,7 @@ _llm = ChatOpenAI(
 
 def evaluate_resume(state: ResumeState) -> dict:
     """LLM 节点：对 profile 按维度评分并给出改进建议。"""
+    print("[3/5] 评估简历质量（LLM 调用中）...")
     prompt_template = _PROMPT_PATH.read_text(encoding="utf-8")
     prompt = prompt_template.format(profile=json.dumps(state["profile"], ensure_ascii=False, indent=2))
 

@@ -6,6 +6,7 @@ from state import ResumeState
 
 def parse_input(state: ResumeState) -> dict:
     """纯工具节点：PDF 提取文本 or 清洗粘贴文本，统一输出 raw_input。"""
+    print("[1/5] 解析简历文件...")
     input_type = state["input_type"]
 
     if input_type == "pdf":

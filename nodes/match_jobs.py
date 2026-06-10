@@ -74,6 +74,9 @@ def _rule_filter(jobs: dict, profile: dict, constraints: dict) -> set[str]:
     salary_min       = constraints.get("salary_min")           # 最低薪资（元）
     exclude_company  = (constraints.get("exclude_company_type") or "").strip()
 
+    print(f"  [规则过滤] 工作年限≤{years}, 城市={location or '不限'}, "
+          f"最低薪资={salary_min or '不限'}, 排除行业={exclude_company or '无'}")
+
     passed = set()
     for jid, job in jobs.items():
         if job.get("years_required", 0) > years:
@@ -85,6 +88,8 @@ def _rule_filter(jobs: dict, profile: dict, constraints: dict) -> set[str]:
         if exclude_company and exclude_company in (job.get("industry") or ""):
             continue
         passed.add(jid)
+
+    print(f"  [规则过滤] 原始职位 {len(jobs)} → 过滤后 {len(passed)}")
     return passed
 
 
@@ -99,7 +104,9 @@ def _vector_search(query: str, allowed_ids: set[str]) -> list[str]:
         include=["distances"],
     )
     ids = results["ids"][0]
-    return [jid for jid in ids if jid in allowed_ids][:_VECTOR_TOP_K]
+    matched = [jid for jid in ids if jid in allowed_ids][:_VECTOR_TOP_K]
+    print(f"  [向量检索] 命中 {len(matched)} 条")
+    return matched
 
 
 # ── 3. BM25 关键词检索 ───────────────────────────────────────────────────────
@@ -114,7 +121,9 @@ def _bm25_search(query: str, allowed_ids: set[str]) -> list[str]:
         key=lambda x: x[1],
         reverse=True,
     )
-    return [jid for jid, _ in ranked[:_BM25_TOP_K]]
+    matched = [jid for jid, _ in ranked[:_BM25_TOP_K]]
+    print(f"  [BM25检索] 命中 {len(matched)} 条")
+    return matched
 
 
 # ── 4. RRF 融合 ──────────────────────────────────────────────────────────────
@@ -135,30 +144,46 @@ def _rerank(query: str, candidates: list[str]) -> list[str]:
             for jid in candidates]
 
     resp = requests.post(
-        f"{RERANK_BASE_URL.rstrip('/')}/rerank",
+        RERANK_BASE_URL.rstrip('/'),
         headers={
             "Authorization": f"Bearer {RERANK_API_KEY}",
             "Content-Type":  "application/json",
         },
         json={
             "model":      RERANK_MODEL,
-            "query":      query,
-            "documents":  docs,
-            "top_n":      _RERANK_TOP_N,
+            "input": {
+                "query":     query,
+                "documents": docs,
+            },
+            "parameters": {
+                "top_n":          _RERANK_TOP_N,
+                "return_documents": False,
+            },
         },
         timeout=30,
     )
     resp.raise_for_status()
     data = resp.json()
 
-    # DashScope rerank 返回 results[].index
-    results = data.get("results", [])
-    return [candidates[r["index"]] for r in results[:_RERANK_TOP_N]]
+    # DashScope rerank 返回 output.results[].index
+    results = data.get("output", {}).get("results", [])
+    ranked_ids = [candidates[r["index"]] for r in results[:_RERANK_TOP_N]]
+
+    print(f"  [Rerank] 请求 {RERANK_BASE_URL.rstrip('/')}")
+    print(f"  [Rerank] 候选 {len(candidates)} → 精排 {len(ranked_ids)}")
+    for i, jid in enumerate(ranked_ids, 1):
+        title = _jobs_by_id[jid].get("title", _jobs_by_id[jid].get("job_title", "未知"))
+        score = next((r.get("relevance_score", "?") for r in results if r["index"] == candidates.index(jid)), "?")
+        print(f"    {i}. {title}  (score={score})")
+
+    return ranked_ids
 
 
 # ── 主节点函数 ───────────────────────────────────────────────────────────────
 
 def match_jobs(state: ResumeState) -> dict:
+    iteration = state.get("iteration", 0)
+    print(f"\n[4/5] 检索匹配职位（向量 + BM25 + Rerank）  [迭代 #{iteration}]")
     _load_resources()
 
     profile     = state.get("profile", {})
@@ -180,6 +205,8 @@ def match_jobs(state: ResumeState) -> dict:
     if query_append:
         query = f"{query} {query_append}"
 
+    print(f"  [检索Query] {query}")
+
     allowed_ids = _rule_filter(_jobs_by_id, profile, constraints)
     if not allowed_ids:
         allowed_ids = set(_jobs_by_id.keys())  # 规则过滤后为空则不过滤
@@ -187,6 +214,8 @@ def match_jobs(state: ResumeState) -> dict:
     vec_ids  = _vector_search(query, allowed_ids)
     bm25_ids = _bm25_search(query, allowed_ids)
     merged   = _rrf_merge(vec_ids, bm25_ids)
+
+    print(f"  [RRF融合] 向量{len(vec_ids)} + BM25{len(bm25_ids)} → 融合 {len(merged)} 条")
 
     top_candidates = merged[:_RERANK_TOP_N * 2]  # 给 rerank 留足候选
     ranked_ids     = _rerank(query, top_candidates)

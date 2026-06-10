@@ -18,6 +18,7 @@ _llm = ChatOpenAI(
 
 def extract_profile(state: ResumeState) -> dict:
     """LLM 节点：将原始简历文本结构化为 profile JSON。"""
+    print("[2/5] 提取简历结构（LLM 调用中）...")
     prompt_template = _PROMPT_PATH.read_text(encoding="utf-8")
 
     # 如果有 clarify 补充信息，注入到 prompt

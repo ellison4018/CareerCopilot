@@ -15,16 +15,29 @@ from nodes.parse_feedback import parse_feedback
 def should_clarify(state: ResumeState) -> str:
     """条件路由：profile 关键字段缺失则补充，否则直接匹配职位。"""
     profile = state.get("profile", {})
-    missing = not profile.get("target_role") or not profile.get("years_of_experience")
+    missing = not profile.get("target_role") or profile.get("years_of_experience") is None
     return "clarify" if missing else "match_jobs"
 
 
+def after_clarify(state: ResumeState) -> str:
+    """clarify 后：有用户回答则重新提取 profile，否则直接匹配职位。"""
+    return "extract_profile" if state.get("clarify_answers") else "match_jobs"
+
+
 def human_feedback_router(state: ResumeState) -> str:
-    """条件路由：有用户反馈且未超过迭代上限则重新排序，否则结束。"""
-    feedback = state.get("user_feedback", "").strip()
+    """条件路由：首次始终征求反馈；后续仅在有实质反馈且未超迭代上限时循环。"""
     iteration = state.get("iteration", 0)
+    feedback  = state.get("user_feedback", "").strip()
+
+    # 第一次（iteration=0）：还没有征求过反馈，必须进入 revise
+    if iteration == 0:
+        return "revise"
+
+    # 后续：用户给了实质反馈且未超上限 → 继续循环
     if feedback and iteration < 3:
         return "revise"
+
+    # 用户跳过 或 达到上限 → 结束
     return END
 
 
@@ -48,7 +61,10 @@ def build_graph(checkpointer=None) -> StateGraph:
     # 固定边
     builder.add_edge("parse_input", "extract_profile")
     builder.add_edge("extract_profile", "evaluate_resume")
-    builder.add_edge("clarify", "extract_profile")        # 补充信息后重新提取
+    builder.add_conditional_edges(
+        "clarify", after_clarify,
+        {"extract_profile": "extract_profile", "match_jobs": "match_jobs"},
+    )
     builder.add_edge("match_jobs", "rank_and_explain")
     builder.add_edge("rank_and_explain", "generate_output")
     builder.add_edge("revise", "parse_feedback")          # 反馈 → 提炼约束

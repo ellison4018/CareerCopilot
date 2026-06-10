@@ -1,13 +1,13 @@
 Extract structured search constraints from the user's job search feedback below.
 
 Return ONLY a valid JSON object with this exact schema:
-{
+{{
   "location": "string or null",
   "exclude_company_type": "string or null",
   "salary_min": "number or null",
   "target_role": "string or null",
   "query_append": "string or null"
-}
+}}
 
 Field rules:
 - location: city name if user specified a city preference (e.g. "深圳", "北京"), else null

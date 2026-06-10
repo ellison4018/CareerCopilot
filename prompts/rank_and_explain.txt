@@ -4,14 +4,14 @@ Do NOT re-rank. Preserve the original order — pick the most relevant ones and 
 
 Return ONLY a valid JSON array with this exact schema:
 [
-  {
+  {{
     "job_id": "string",
     "job_title": "string",
     "match_score": number,
     "match_reasons": ["string"],
     "gaps": ["string"],
     "advice": "string"
-  }
+  }}
 ]
 
 Field rules:

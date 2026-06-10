@@ -111,8 +111,8 @@ def run():
                 print("═" * 60)
             answer = input("\n您的意见（直接回车跳过）：").strip()
             if not answer:
-                # 用户跳过反馈，用空字符串恢复，human_feedback_router 会直接结束
-                answer = ""
+                # 用户跳过反馈，直接退出循环
+                break
 
         # 用用户输入恢复 graph
         result = graph.invoke(Command(resume=answer), config=config)

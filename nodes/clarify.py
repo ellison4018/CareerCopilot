@@ -13,10 +13,11 @@ def clarify(state: ResumeState) -> dict:
     if profile.get("years_of_experience") is None:
         missing.append("您的工作年限大约是多少年？")
 
+    if not missing:
+        return {"clarify_questions": [], "clarify_answers": ""}
+
     questions = "\n".join(f"{i+1}. {q}" for i, q in enumerate(missing))
 
-    # interrupt() 暂停 graph，value 会作为 interrupt 事件的 payload 返回给调用方
-    # 调用方通过 graph.invoke(Command(resume=answer)) 恢复执行
     answer = interrupt({
         "questions": questions,
         "message": "请回答以下问题以便更准确地为您推荐职位：",

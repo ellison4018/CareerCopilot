@@ -22,6 +22,7 @@ _JOB_FIELDS = ("id", "title", "position_name", "industry", "location",
 
 def rank_and_explain(state: ResumeState) -> dict:
     """LLM 节点：对 Top-10 候选岗位重排序并生成匹配理由 + 差距提示。"""
+    print("[5/5] 排序并生成推荐理由（LLM 调用中）...")
     prompt_template = _PROMPT_PATH.read_text(encoding="utf-8")
 
     jobs_slim = [
