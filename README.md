@@ -285,7 +285,7 @@ python main.py --text
 
 ---
 
-## 设计亮点（面试要点）
+## 设计
 
 **1. interrupt() + MemorySaver：有状态的 Human-in-the-loop**
 
