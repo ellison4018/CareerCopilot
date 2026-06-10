@@ -2,7 +2,7 @@
 
 > 基于 LangGraph 的智能简历评估与职位推荐系统
 
-CareerCopilot 接收 PDF 或文本格式的简历，通过 LLM 提取结构化档案、多维度评分，再经由三层 RAG 检索从职位库中精准匹配岗位，最终生成包含匹配理由和差距分析的 Markdown 报告。全程内置两处 Human-in-the-loop 交互节点，支持用户随时介入修正和调整。
+CareerCopilot 接收 PDF 或文本格式的简历，通过 LLM 提取结构化档案、多维度评分，再经由三层 RAG 检索从职位库中精准匹配岗位，最终生成包含匹配理由和差距分析的 Markdown 报告。全程内置两处 **Human-in-the-loop** 交互节点，配合 **MemorySaver Checkpointer** 实现状态持久化，支持异步中断恢复与多轮反馈闭环。
 
 ---
 
@@ -22,11 +22,11 @@ flowchart TD
     F --> G[rank_and_explain\n🤖 LLM 解释 Top 3-5]
     G --> H[generate_output\n渲染 Markdown 报告]
 
-    H -->|有反馈 且 iteration < 3| I[revise\n⏸ interrupt 收集反馈]
+    H -->|iteration=0 或 有反馈且 iteration < 3| I[revise\n⏸ interrupt 收集反馈]
     I --> J[parse_feedback\n🤖 LLM 提炼结构化约束]
     J --> F
 
-    H -->|无反馈 或 达到上限| K([输出报告])
+    H -->|用户跳过 或 iteration ≥ 3| K([输出报告])
 
     subgraph RAG ["三层检索 (match_jobs)"]
         direction TB
@@ -46,11 +46,93 @@ flowchart TD
 
 | 特性 | 实现方式 |
 |------|----------|
-| Human-in-the-loop | LangGraph `interrupt()` — 支持状态持久化与异步恢复，优于简单 `input()` |
-| 条件路由 | `should_clarify`：profile 缺关键字段则追问，否则直接检索 |
+| **Human-in-the-loop** | LangGraph `interrupt()` — 暂停时将完整 state 序列化进 checkpointer，`Command(resume=)` 恢复执行 |
+| **状态持久化** | `MemorySaver` checkpointer + `thread_id` — 每次 interrupt 自动快照 state，支持跨调用恢复 |
+| 条件路由 | `should_clarify` / `after_clarify` / `human_feedback_router` — 根据字段完整度和反馈状态动态分叉 |
 | 三层 RAG | Chroma 向量 + BM25 关键词 → RRF 融合 → Rerank 精排，各层互补 |
-| 反馈闭环 | 用户自然语言反馈 → `parse_feedback` 结构化 → 重新检索，iteration 上限 3 次防死循环 |
+| 反馈闭环 | 用户自然语言 → `parse_feedback` 结构化约束 → 重新检索，iteration ≤ 3 防死循环 |
 | 凭证隔离 | `.env` 管理所有 API Key，`config.py` 只暴露常量，各节点独立实例化 LLM |
+
+---
+
+## Human-in-the-loop 与状态持久化
+
+这是本项目最核心的设计——**Agent 不是一条直通管线，而是可中断、可恢复、可多轮交互的有状态系统。**
+
+### 为什么用 `interrupt()` 而不是 `input()`
+
+| | `input()`（普通阻塞） | `interrupt()`（LangGraph 原生） |
+|---|---|---|
+| 暂停时状态 | 丢失，进程内存中 | **自动快照到 checkpointer** |
+| 恢复方式 | 只能从头重跑 | `Command(resume=answer)` 从中断点继续 |
+| 跨进程恢复 | ❌ 不支持 | ✅ 同 `thread_id` 即可恢复 |
+| 扩展为 Web/API | ❌ 不可能 | ✅ 天然支持异步回调 |
+
+### 两处 interrupt 节点
+
+**`clarify`** — 简历关键信息缺失时追问：
+
+```python
+# nodes/clarify.py
+answer = interrupt({
+    "message": "请回答以下问题以便更准确地为您推荐职位：",
+    "questions": questions,
+})
+# 恢复后 answer 即为用户输入，注入 state["clarify_answers"]
+```
+
+**`revise`** — 生成报告后征集调整意见：
+
+```python
+# nodes/revise.py
+result = interrupt({
+    "message": "对以上推荐结果是否有调整意见？",
+    "current_report": state.get("final_report", ""),
+})
+# 恢复后 result 注入 state["user_feedback"]，iteration +1
+```
+
+### Checkpointer 状态持久化机制
+
+```python
+# main.py — 核心执行逻辑
+checkpointer = MemorySaver()                          # ① 内存级 checkpointer
+graph = build_graph(checkpointer=checkpointer)         # ② 编译时注入
+
+thread_id = str(uuid.uuid4())
+config = {"configurable": {"thread_id": thread_id}}    # ③ 每次会话独立 thread
+
+result = graph.invoke(initial_state, config=config)    # ④ 首次运行 → 遇到 interrupt 自动快照
+
+# ... 读取 interrupt payload，收集用户输入 ...
+
+result = graph.invoke(Command(resume=answer), config=config)  # ⑤ 从快照恢复，注入 answer，继续执行
+```
+
+**工作流程**：
+
+1. `graph.invoke()` 运行到 `interrupt()` → **自动暂停**，将完整 `ResumeState` 快照写入 checkpointer
+2. `main.py` 从 `graph.get_state(config)` 读取 interrupt payload，展示给用户
+3. 用户输入后，`Command(resume=answer)` 从 **快照恢复** 整个 state，把 answer 传回中断节点继续执行
+4. 遇到下一个 `interrupt()` → 重复 1-3
+5. 无 interrupt → graph 运行到终点，`get_state(config).values` 包含完整最终 state
+
+### 条件路由控制循环
+
+```python
+# graph.py
+def human_feedback_router(state: ResumeState) -> str:
+    iteration = state.get("iteration", 0)
+    feedback  = state.get("user_feedback", "").strip()
+
+    if iteration == 0:          # 首次：还没征求反馈，必须进入 revise
+        return "revise"
+    if feedback and iteration < 3:  # 后续：有实质反馈 → 循环重检索
+        return "revise"
+    return END                  # 用户跳过 或 达到上限 → 结束
+```
+
+这意味着用户可以 **多次调整检索方向**（换城市、排除某类公司、调薪资），每次反馈都经 `parse_feedback` 提炼为结构化约束，重新执行完整三层 RAG 检索。
 
 ---
 
@@ -58,23 +140,23 @@ flowchart TD
 
 ```
 CareerCopilot/
-├── main.py                  # CLI 入口，interrupt 事件循环
-├── graph.py                 # LangGraph StateGraph 定义
-├── state.py                 # ResumeState TypedDict
+├── main.py                  # CLI 入口，interrupt 事件循环 + Command(resume)
+├── graph.py                 # LangGraph StateGraph 定义 + 条件路由
+├── state.py                 # ResumeState TypedDict — Agent 全局状态
 ├── config.py                # 凭证常量 + Embedding 单例
 ├── .env.example             # 环境变量模板
 ├── requirements.txt
 │
 ├── nodes/
 │   ├── parse_input.py       # PDF / 文本解析（pymupdf）
-│   ├── extract_profile.py   # 🤖 结构化简历解析
-│   ├── evaluate_resume.py   # 🤖 三维度评分
-│   ├── clarify.py           # ⏸ 追问缺失信息（interrupt）
+│   ├── extract_profile.py   # 结构化简历解析（LLM）
+│   ├── evaluate_resume.py   # 三维度评分（LLM）
+│   ├── clarify.py           # ⏸ 追问缺失信息（interrupt + MemorySaver）
 │   ├── match_jobs.py        # 三层 RAG 检索
-│   ├── rank_and_explain.py  # 🤖 匹配理由 + 差距分析
+│   ├── rank_and_explain.py  # 匹配理由 + 差距分析（LLM）
 │   ├── generate_output.py   # Markdown 报告生成
-│   ├── revise.py            # ⏸ 收集用户反馈（interrupt）
-│   └── parse_feedback.py    # 🤖 反馈 → 结构化约束
+│   ├── revise.py            # ⏸ 收集用户反馈（interrupt + MemorySaver）
+│   └── parse_feedback.py    # 反馈 → 结构化约束（LLM）
 │
 ├── prompts/
 │   ├── extract_profile.txt
@@ -114,19 +196,22 @@ cp .env.example .env
 `.env` 模板：
 
 ```
+# LLM（支持任意 OpenAI 兼容 API）
 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_API_KEY=your_api_key_here
 
+# Embedding
 EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 EMBEDDING_API_KEY=your_api_key_here
 EMBEDDING_MODEL=text-embedding-v4
 
-RERANK_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# Rerank（DashScope 原生 API，非 OpenAI 兼容格式）
+RERANK_BASE_URL=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
 RERANK_API_KEY=your_api_key_here
-RERANK_MODEL=qwen3-vl-rerank
+RERANK_MODEL=qwen3-rerank
 ```
 
-> 默认使用阿里云 DashScope OpenAI 兼容接口。任何支持 OpenAI 格式的 API 均可接入，修改 `base_url` 即可。
+> 默认使用阿里云 DashScope。LLM 和 Embedding 走 OpenAI 兼容接口，Rerank 起原生 HTTP API（请求体为嵌套 `input/parameters` 格式）。任何支持 OpenAI 格式的 API 均可接入 LLM/Embedding，修改 `base_url` 即可。
 
 ### 3. 准备职位数据 & 构建索引
 
@@ -149,6 +234,40 @@ python main.py resume.pdf
 python main.py --text
 ```
 
+运行时输出示例：
+
+```
+── 开始分析简历 ──
+
+[1/5] 解析简历文件...
+[2/5] 提取简历结构（LLM 调用中）...
+[3/5] 评估简历质量（LLM 调用中）...
+[4/5] 检索匹配职位（向量 + BM25 + Rerank）  [迭代 #0]
+  [检索Query] 数据分析师 Python SQL 机器学习...
+  [规则过滤] 工作年限≤3, 城市=不限, 最低薪资=不限, 排除行业=无
+  [规则过滤] 原始职位 500 → 过滤后 480
+  [向量检索] 命中 20 条
+  [BM25检索] 命中 20 条
+  [RRF融合] 向量20 + BM2520 → 融合 28 条
+  [Rerank] 候选 20 → 精排 10
+    1. 数据分析师  (score=0.92)
+    2. BI工程师    (score=0.85)
+    ...
+[5/5] 排序并生成推荐理由（LLM 调用中）...
+
+══════════════════════════════════════
+# CareerCopilot 职业报告 — 某某
+══════════════════════════════════════
+
+对以上推荐结果是否有调整意见？（例如：不要外企 / 只看深圳 / 薪资要求 20K 以上）
+您的意见：只看深圳的岗位，薪资15K以上
+
+[4/5] 检索匹配职位（向量 + BM25 + Rerank）  [迭代 #1]
+  [规则过滤] 工作年限≤3, 城市=深圳, 最低薪资=15000, 排除行业=无
+  [规则过滤] 原始职位 500 → 过滤后 35
+  ...
+```
+
 ---
 
 ## 技术栈
@@ -156,21 +275,26 @@ python main.py --text
 | 层 | 技术 |
 |----|------|
 | Agent 框架 | LangGraph 1.2 |
+| 状态持久化 | LangGraph `MemorySaver` checkpointer + `interrupt()` / `Command(resume=)` |
 | LLM 接入 | LangChain-OpenAI（兼容任意 OpenAI 格式 API） |
 | 向量数据库 | Chroma（本地持久化，零服务器） |
 | 关键词检索 | rank-bm25 |
 | 检索融合 | RRF（Reciprocal Rank Fusion） |
-| Rerank | qwen3-vl-rerank（阿里云，可替换） |
+| Rerank | DashScope qwen3-rerank（原生 HTTP API，可替换） |
 | PDF 解析 | PyMuPDF |
-| 状态持久化 | LangGraph MemorySaver |
 
 ---
 
 ## 设计亮点（面试要点）
 
-**1. interrupt() vs input()**
+**1. interrupt() + MemorySaver：有状态的 Human-in-the-loop**
 
-`clarify` 和 `revise` 节点使用 LangGraph `interrupt()` 而非普通 `input()`。`interrupt()` 在暂停时将完整 state 序列化进 checkpointer，支持跨进程/异步恢复；`input()` 则是阻塞调用，无法持久化。这使系统具备扩展为 Web 服务的基础架构。
+`clarify` 和 `revise` 两个节点使用 LangGraph `interrupt()` 暂停执行。暂停时，`MemorySaver` checkpointer 自动将完整 `ResumeState` 快照持久化。恢复时，`Command(resume=answer)` 从快照重建 state 并把用户输入注入中断节点。
+
+这套机制的关键优势：
+- **可恢复**：同一 `thread_id` 下任意时刻可恢复，无需从头重跑
+- **可扩展**：CLI → Web API 只需把 interrupt 换成异步回调，checkpointer 换成数据库后端即可
+- **有状态**：反馈循环中的 `iteration`、`constraints`、`user_feedback` 都随快照自动保留
 
 **2. 两阶段检索**
 
@@ -180,11 +304,14 @@ python main.py --text
 
 **3. 反馈闭环重检索**
 
-用户反馈不只是过滤解释层，而是经 `parse_feedback` 提炼为结构化约束（城市、薪资下限、排除公司类型等），注入 `match_jobs` 重新执行完整三层检索。反馈真正影响候选池，而非只改变呈现。
+用户反馈不只是过滤解释层，而是经 `parse_feedback` 提炼为结构化约束（城市、薪资下限、排除公司类型等），注入 `match_jobs` 重新执行完整三层检索。反馈真正影响候选池，而非只改变呈现。每次迭代 RAG 步骤都会打印 debug 日志（query、规则过滤、向量/BM25 命中数、Rerank 排名），方便对比前后变化。
 
-**4. iteration 防死循环**
+**4. 条件路由防死循环**
 
-`human_feedback_router` 检查 `state.iteration < 3`，超过上限直接输出，防止用户无限循环修改。
+`human_feedback_router` 三段逻辑：
+- `iteration == 0` → 必须进入 `revise`（首次还没有征求反馈）
+- 有实质反馈 + `iteration < 3` → 循环重检索
+- 用户跳过 或 `iteration ≥ 3` → 直接结束
 
 ---
 
