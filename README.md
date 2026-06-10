@@ -234,7 +234,7 @@ python main.py resume.pdf
 python main.py --text
 ```
 
-运行时输出示例：
+运行节点流程：
 
 ```
 ── 开始分析简历 ──
