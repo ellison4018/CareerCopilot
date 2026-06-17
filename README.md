@@ -42,6 +42,28 @@ flowchart TD
 
 ---
 
+## 部署形态
+
+本仓库为**本地开发版**，使用 Chroma + 500 条 demo 数据，目的是零依赖一键跑通完整 Agent 链路，方便阅读与二次开发。
+
+| | 本地开发版（本仓库） | 生产部署版 |
+|---|---|---|
+| 向量库 | Chroma（本地持久化） | Elasticsearch Hybrid Search |
+| 数据规模 | 500 条 demo 岗位 | 原始 500 万+ → 清洗去重后索引 220 万+ |
+| 数据源 | `jobs/jobs.json` 示例 | BOSS、智联招聘、前程无忧等多渠道 |
+| Checkpointer | `MemorySaver`（进程内存） | 可替换为 SQLite / Postgres backend |
+| 交互形态 | CLI + `interrupt()` 阻塞读取 stdin | Web API + 异步 `Command(resume=)` 回调 |
+
+**生产环境性能（同一测试集，人工标注 ground truth）**：
+
+- 单次端到端检索（向量 + BM25 + RRF + Rerank）耗时 < 500ms（P95）
+- Top-10 命中率（Recall@10）相对单路向量召回基线 **+12%**
+- 累计服务活跃用户 3579 名，处理简历分析请求 2655 次
+
+得益于检索层的可插拔抽象与 `interrupt()` / `Command(resume=)` 的状态机设计，从本地版迁移到生产版**只需替换检索后端实现与 checkpointer backend，Agent 主流程零改动**。
+
+---
+
 ## 核心特性
 
 | 特性 | 实现方式 |
